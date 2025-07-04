@@ -1,0 +1,108 @@
+'CR6 Series
+'Created by Osprey Measurement Systems
+'04/07/2025
+'v1.0
+
+'Campbell CR6 reference program to read Osprey OTS sensors
+'Assumes factory default Modbus Addresses: 1 at top of the string, n (No_IPX) at bottom
+
+'OTS CR6 Wiring:
+  'Vin 12V (Red) = SW12-1
+  'RS485 A (Blue) = C2
+  'RS485 B (White) = C1
+  'Ground (Black) = G
+
+'User Constants
+Const No_OTS = 3                    'Enter number of OTS sensors to be read
+Const Meas_Int = 1                  'Enter measurement interval in minutes
+
+'Fixed Constants
+Const Comport = ComC1
+Const BaudRate = 9600
+
+'Variables and Units
+Public PTemp, Batt_V
+Public OTS_Roll(No_OTS)
+Public OTS_Pitch(No_OTS)
+Public OTS_Yaw(No_OTS)
+Public OTS_X(No_OTS)
+Public OTS_Y(No_OTS)
+Public OTS_Z(No_OTS)
+Public OTS_V(No_OTS)
+Public OTS_DegC(No_OTS)
+Public OTS_Status(No_OTS)
+Public i
+Public OTS_ResultCode(No_OTS)
+
+Units Batt_V=Volts
+Units PTemp=Deg C
+Units OTS_Status()=code
+Units OTS_DegC()=Deg C
+Units OTS_Roll()=Rad
+Units OTS_Pitch()=Rad
+Units OTS_Yaw()=Rad
+Units OTS_X()=G
+Units OTS_Y()=G
+Units OTS_Z()=G
+Units OTS_V()=Volts
+
+'Define Data Tables
+DataTable(OTS_Data,True,-1)
+  DataInterval(0,Meas_Int,Min,-1)
+  Sample(1,Batt_V,FP2)
+  Sample(1,PTemp,FP2)
+  Sample(No_OTS,OTS_Status,UINT2)
+  Sample(No_OTS,OTS_Roll,IEEE4)
+  Sample(No_OTS,OTS_Pitch,IEEE4)
+  Sample(No_OTS,OTS_Yaw,IEEE4)
+  Sample(No_OTS,OTS_X,IEEE4)
+  Sample(No_OTS,OTS_Y,IEEE4)
+  Sample(No_OTS,OTS_Z,IEEE4)
+  Sample(No_OTS,OTS_V,IEEE4)
+  Sample(No_OTS,OTS_DegC,IEEE4)
+EndTable
+
+'Main Program
+BeginProg
+  'Open ComC1 for MODBUS RS-485 communications at 9600 baud, 8 data bits, even parity, and one stop bit
+  SerialOpen(Comport,BaudRate,0,0,50,4)
+  'Main Scan
+  Scan(Meas_Int,Min,1,0)
+	
+	'Power Out
+	SW12(SW12_1, 1)
+	' Wait 350 ms * No_IPX for string to boot
+    Delay(0, 500 + No_OTS * 550, mSec)
+	
+    'Default CR6 Datalogger Battery Voltage measurement 'BattV'
+    Battery(Batt_V)
+    'Default CR6 Datalogger Wiring Panel Temperature measurement 'PTemp_C'
+    PanelTemp(PTemp,50)
+    For i = 01 To No_OTS
+      ModbusClient(OTS_ResultCode(i),Comport,BaudRate,i,3,OTS_V(i),&H103,1,1,100,2)
+      Delay(0,50,mSec)
+      ModbusClient(OTS_ResultCode(i),Comport,BaudRate,i,3,OTS_DegC(i),&H105,1,1,100,2)
+      Delay(0,50,mSec)
+      ModbusClient(OTS_ResultCode(i),Comport,BaudRate,i,3,OTS_X(i),&H107,1,1,100,2)
+      Delay(0,50,mSec)
+      ModbusClient(OTS_ResultCode(i),Comport,BaudRate,i,3,OTS_Y(i),&H109,1,1,100,2)
+      Delay(0,50,mSec)
+      ModbusClient(OTS_ResultCode(i),Comport,BaudRate,i,3,OTS_Z(i),&H10B,1,1,100,2)
+      Delay(0,50,mSec)
+      ModbusClient(OTS_ResultCode(i),Comport,BaudRate,i,3,OTS_Roll(i),&H10D,1,1,100,2)
+      Delay(0,50,mSec)
+      ModbusClient(OTS_ResultCode(i),Comport,BaudRate,i,3,OTS_Pitch(i),&H10F,1,1,100,2)
+      Delay(0,50,mSec)
+      ModbusClient(OTS_ResultCode(i),Comport,BaudRate,i,3,OTS_Yaw(i),&H111,1,1,100,2)
+      Delay(0,50,mSec)
+      ModbusClient(OTS_ResultCode(i),Comport,BaudRate,i,3,OTS_Status(i),&H118,1,1,100,2)
+      Delay(0,50,mSec)
+    Next i
+    'Call Data Tables and Store Data
+    CallTable OTS_Data
+	
+	' Turn off SW12V
+    SW12(SW12_1, 0)
+  
+  NextScan
+EndProg
