@@ -1,0 +1,82 @@
+'CR6 Series
+'Created by Osprey Measurement Systems
+'04/07/2025
+'v1.1
+
+'Campbell CR6 reference program to read Osprey IPX sensors
+'Assumes factory default Modbus Addresses: 1 at bottom of the string, n (No_IPX) at top
+'IPX CR6 Wiring:
+  'Vin 12V (Red) = SW12-1
+  'RS485 A (Blue) = C2
+  'RS485 B (White) = C1
+  'Ground (Black) = G
+
+'User Constants
+Const No_IPX = 6                    'Enter number of IPX sensors to be read
+Const Meas_Int = 1                  'Enter measurement interval in minutes
+
+'Fixed Constants
+Const Comport = ComC1               'ComC1
+Const IPXBaudRate = 9600            'Enter baud rate set on RS485 interface and IPX
+
+'Variables and Units
+Public PTemp, Batt_V
+Public IPX_mm(No_IPX)
+Public IPX_V(No_IPX)
+Public IPX_DegC(No_IPX)
+Public IPX_Status(No_IPX)
+Public i
+Public IPX_ResultCode(No_IPX)
+
+Units Batt_V=Volts
+Units PTemp=Deg C
+Units IPX_Status()=code
+Units IPX_DegC()=Deg C
+Units IPX_mm()=mm
+Units IPX_V()=Volts
+
+'Define Data Tables
+DataTable(IPX_Data,True,-1)
+  DataInterval(0,Meas_Int,Min,-1)
+  Sample(1,Batt_V,FP2)
+  Sample(1,PTemp,FP2)
+  Sample(No_IPX,IPX_mm,IEEE4)
+  Sample(No_IPX,IPX_DegC,FP2)
+EndTable
+
+'Main Program
+BeginProg
+  'Open ComC1 for MODBUS RS-485 communications at 9600 baud, 8 data bits, even parity, and one stop bit
+  SerialOpen(Comport,IPXBaudRate,0,0,50,4)
+  'Main Scan
+  Scan(Meas_Int,Min,1,0)
+	
+	'Power Out
+	SW12(SW12_1, 1)
+	' Wait 350 ms * No_IPX for string to boot
+    Delay(0, No_IPX * 350, mSec)
+	
+    'Default CR6 Datalogger Battery Voltage measurement 'BattV'
+    Battery(Batt_V)
+    'Default CR6 Datalogger Wiring Panel Temperature measurement 'PTemp_C'
+    PanelTemp(PTemp,50)
+    For i = 01 To No_IPX
+      'initiate reading by writing to register 0x63
+      ModbusClient(IPX_Status(i),Comport,IPXBaudRate,i,6,0,&H64,1,1,10,2)
+      Delay(0,1,Sec)
+      ModbusClient(IPX_ResultCode(i),Comport,IPXBaudRate,i,3,IPX_mm(i),&H137,1,1,10,2)
+      Delay(0,1,Sec)
+      ModbusClient(IPX_ResultCode(i),Comport,IPXBaudRate,i,3,IPX_V(i),&H13D,1,1,10,2)
+      Delay(0,1,Sec)
+      ModbusClient(IPX_ResultCode(i),Comport,IPXBaudRate,i,3,IPX_DegC(i),&H13A,1,1,10,2)
+      Delay(0,1,Sec)
+    Next i
+    'Call Data Tables and Store Data
+    CallTable IPX_Data
+	
+	' Turn off SW12V
+    SW12(SW12_1, 0)
+  
+  NextScan
+EndProg
+
