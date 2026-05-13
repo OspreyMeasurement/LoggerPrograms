@@ -1,0 +1,89 @@
+'CR6 Series
+'Created by Osprey Measurement Systems
+'05/07/2025
+'v1.0
+
+'Campbell CR6 reference program to read Osprey Automatic Settlement Profiler (ASP) sensors
+'Assumes factory default Modbus Addresses: 1 at start of the string, n (No_ASP_nodes) at bottom
+
+'Osprey ASP CR6 Wiring:
+  'Vin 12V (Red) = SW12-1
+  'RS485 A (Blue) = C2
+  'RS485 B (White) = C1
+  'Ground (Black) = G
+
+'User Constants
+Const No_ASP_nodes = 3                    'Enter number of ASP nodes to be read
+Const Meas_Int = 1                        'Enter measurement interval in minutes
+
+'Fixed Constants
+Const Comport = ComC1
+Const BaudRate = 9600
+
+'Variables and Units
+Public PTemp, Batt_V
+Public ASP_Pressure(No_ASP_nodes)
+Public ASP_Distance(No_ASP_nodes)
+Public ASP_V(No_ASP_nodes)
+Public ASP_DegC(No_ASP_nodes)
+Public ASP_Status(No_ASP_nodes)
+Public i
+Public ASP_ResultCode(No_ASP_nodes)
+
+Units Batt_V=Volts
+Units PTemp=Deg C
+Units ASP_Status()=code
+Units ASP_DegC()=Deg C
+Units ASP_V()=Volts
+Units ASP_Pressure()=Pa
+Units ASP_Distance()=mm 'Settlement wrt Reference
+
+'Define Data Tables
+DataTable(ASP_Data,True,-1)
+  DataInterval(0,Meas_Int,Min,-1)
+  Sample(1,Batt_V,FP2)
+  Sample(1,PTemp,FP2)
+  Sample(No_ASP_nodes,ASP_Status,UINT2)
+  Sample(No_ASP_nodes,ASP_V,IEEE4)
+  Sample(No_ASP_nodes,ASP_DegC,IEEE4)
+  Sample(No_ASP_nodes,ASP_Distance,IEEE4)
+  Sample(No_ASP_nodes,ASP_Pressure,IEEE4)
+
+EndTable
+
+'Main Program
+BeginProg
+  'Open ComC1 for MODBUS RS-485 communications at 9600 baud, 8 data bits, even parity, and one stop bit
+  SerialOpen(Comport,BaudRate,0,0,50,4)
+  'Main Scan
+  Scan(Meas_Int,Min,1,0)
+	
+	'Power Out
+	SW12(SW12_1, 1)
+	' Wait for string to boot and capture
+    Delay(0, 2500 + No_ASP_nodes * 350, mSec)
+	
+    'Default CR6 Datalogger Battery Voltage measurement 'BattV'
+    Battery(Batt_V)
+    'Default CR6 Datalogger Wiring Panel Temperature measurement 'PTemp_C'
+    PanelTemp(PTemp,50)
+    For i = 01 To No_ASP_nodes
+      ModbusClient(ASP_ResultCode(i),Comport,BaudRate,i,3,ASP_V(i),&H103,1,1,100,2)
+      Delay(0,50,mSec)
+      ModbusClient(ASP_ResultCode(i),Comport,BaudRate,i,3,ASP_DegC(i),&H105,1,1,100,2)
+      Delay(0,50,mSec)
+      ModbusClient(ASP_ResultCode(i),Comport,BaudRate,i,3,ASP_Pressure(i),&HFF,1,1,100,2)
+      Delay(0,50,mSec)
+      ModbusClient(ASP_ResultCode(i),Comport,BaudRate,i,3,ASP_Distance(i),&H101,1,1,100,2)
+      Delay(0,50,mSec)
+      ModbusClient(ASP_ResultCode(i),Comport,BaudRate,i,3,ASP_Status(i),&H118,1,1,100,2)
+      Delay(0,50,mSec)
+    Next i
+    'Call Data Tables and Store Data
+    CallTable ASP_Data
+	
+	' Turn off SW12V
+    SW12(SW12_1, 0)
+  
+  NextScan
+EndProg

@@ -71,7 +71,7 @@ BeginProg
 	
 	'Power Out
 	SW12(SW12_1, 1)
-	' Wait 350 ms * No_IPX for string to boot
+	' Wait 350 ms * No_OTS for string to boot
     Delay(0, 500 + No_OTS * 550, mSec)
 	
     'Default CR6 Datalogger Battery Voltage measurement 'BattV'
