@@ -1,0 +1,119 @@
+' -------------------------------------------------------------------------
+' CR350 Code for Single Osprey ASP Sensor Array (Direct Connection)
+' -------------------------------------------------------------------------
+
+' =========================================================================
+' WIRING GUIDE
+' =========================================================================
+' Sensor Wire | Color | CR350 Terminal
+' ------------|-------|------------------
+' RS485 A     | Blue  | Com2 RX
+' RS485 B     | White | Com2 TX
+' 12V Power   | Red   | SW1
+' Ground      | Black | G
+' =========================================================================
+
+' Define Logger Terminals
+Const ModbusPort = Com2 
+
+' =========================================================================
+' USER CONFIGURATION
+' =========================================================================
+' 1. Define the number of sensors on your directly connected array
+Const NUM_SENSORS = 5
+
+' Configuration (Editable live via LoggerNet/PC400)
+Public ArrayName As String * 20
+
+' Declare State Variables
+Public PTemp As Float
+Public batt_volt As Float
+Public i As Long         ' Sensor Index
+Public MBResult As Long   
+
+' Modbus Data Variables (1D Arrays for single channel)
+Public Distance(NUM_SENSORS) As Float
+Public Voltage(NUM_SENSORS) As Float
+Public Temperature(NUM_SENSORS) As Float
+
+' Define the Data Table
+DataTable(OspreyData, True, -1)
+  DataInterval(0, 5, Min, 10) 
+  
+  Sample(1, ArrayName, String)
+  Sample(NUM_SENSORS, Distance(), FP2)
+  Sample(NUM_SENSORS, Voltage(), FP2)
+  Sample(NUM_SENSORS, Temperature(), FP2)
+EndTable
+
+' -------------------------------------------------------------------------
+' MEASUREMENT SUBROUTINE
+' -------------------------------------------------------------------------
+Sub ReadOspreyArray
+  Dim WarmupDelay_mSec As Long
+  
+  ' 1. POWER UP SENSOR ARRAY (Turns on SW1 terminal)
+  SW12(SW12_1, 1)
+  
+  ' 2. SENSOR WARM-UP DELAY (Calculated dynamically based on array size)
+  WarmupDelay_mSec = 3500 + (350 * NUM_SENSORS) 
+  Delay(0, WarmupDelay_mSec, mSec) 
+
+  ' 3. MODBUS POLLING LOOP (Closest to Farthest)
+  For i = 1 To NUM_SENSORS 
+    ' --- RESET VARIABLES TO NAN ---
+    Distance(i) = NAN
+    Voltage(i) = NAN
+    Temperature(i) = NAN
+    
+    ' Using Logical addresses (Physical + 1)
+    ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Distance(i), 257, 1, 1, 200, 2)
+    Delay(0, 80, mSec)
+    
+    ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Voltage(i), 259, 2, 1, 200, 2)
+    Delay(0, 40, mSec)
+    
+    ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Temperature(i), 261, 2, 1, 200, 2)
+    Delay(0, 80, mSec)
+    
+    ' 4. NODE TRANSITION DELAY
+    Delay(0, 120, mSec)
+  Next i
+  
+  ' 5. POWER DOWN SENSOR ARRAY (Turns off SW1 terminal)
+  SW12(SW12_1, 0)
+EndSub
+
+' -------------------------------------------------------------------------
+' MAIN PROGRAM
+' -------------------------------------------------------------------------
+BeginProg
+  ' Open COM port for Modbus
+  SerialOpen(ModbusPort, 9600, 0, 0, 100, 4)
+
+  ' =======================================================================
+  ' INITIALIZE ARRAY CONFIGURATION
+  ' =======================================================================
+  ArrayName = "ASP_1" ' Set your specific array name here
+
+  ' =======================================================================
+  ' RUN ON STARTUP / POWER CYCLE
+  ' =======================================================================
+  ' Populates the Public variables immediately on boot for live monitoring
+  Call ReadOspreyArray
+
+  ' =======================================================================
+  ' RUN ON SCHEDULED INTERVAL
+  ' =======================================================================
+  Scan(5, Min, 0, 0)
+    ' Read internal logger health
+    PanelTemp(PTemp, 60)
+    Battery(batt_volt)
+
+    ' Call the measurement sequence
+    Call ReadOspreyArray
+    
+    ' Save the data to memory
+    CallTable(OspreyData)
+  NextScan
+EndProg
