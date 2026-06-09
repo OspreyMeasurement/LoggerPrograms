@@ -42,7 +42,7 @@ DataTable(OspreyData, True, -1)
   Sample(NUM_CHANNELS, ArrayName(), String)
   
   ' Flattened 2D Arrays (Stores all channels & all max possible sensors)
-  Sample(NUM_CHANNELS * MAX_SENSORS, Distance(), FP2)
+  Sample(NUM_CHANNELS * MAX_SENSORS, Distance(), IEEE4)
   Sample(NUM_CHANNELS * MAX_SENSORS, Voltage(), FP2)
   Sample(NUM_CHANNELS * MAX_SENSORS, Temperature(), FP2)
 
@@ -82,7 +82,7 @@ Sub ReadOspreyArray
         
           
         ' Using Logical addresses (Physical + 1)
-        ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Distance(ch, i), 257, 1, 1, 200, 2)
+        ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Distance(ch, i), 257, 1, 1, 300, 2)
         Delay(0, 80, mSec)
         
         ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Voltage(ch, i), 259, 2, 1, 200, 2)
