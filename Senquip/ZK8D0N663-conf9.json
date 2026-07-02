@@ -1,0 +1,107 @@
+{
+  "device": {
+    "always_on": false,
+    "vin": {
+      "sleep_enable": false
+    },
+    "batt": {
+      "alert_enable": true,
+      "threshold": 5.5
+    }
+  },
+  "http": {
+    "enable": true
+  },
+  "mjs": {
+    "enable": true,
+    "send_errors": true
+  },
+  "tamper": {
+    "enable": true
+  },
+  "ble": {},
+  "current1": {
+    "name": "Sensor Current",
+    "interval": 1,
+    "start_time": 7
+  },
+  "current2": {
+    "start_time": 6
+  },
+  "serial1": {
+    "name": "OTS - Modbus RTU",
+    "interval": 1,
+    "type": "RS485",
+    "mode": "Modbus",
+    "baud": 9600,
+    "capture": {
+      "start_idle_time": 100,
+      "request": "bX4="
+    },
+    "modbus": {
+      "timeout": 2
+    }
+  },
+  "mod2": {
+    "name": "1 - Distance",
+    "settings": "1,221,310,1",
+    "unit": "mm",
+    "warning": "",
+    "alarm": ""
+  },
+  "mod5": {
+    "name": "2 - Distance",
+    "settings": "2,221,310,1",
+    "unit": "mm",
+    "warning": "",
+    "alarm": ""
+  },
+  "mod8": {
+    "name": "3 - Distance",
+    "settings": "3,221,310,1",
+    "unit": "mm",
+    "warning": "",
+    "alarm": ""
+  },
+  "mod10": {
+    "name": "4 - Distance",
+    "settings": "4,221,310,1",
+    "unit": "mm",
+    "warning": "",
+    "alarm": ""
+  },
+  "mod11": {
+    "name": "5 - Distance",
+    "settings": "5,221,310,1",
+    "unit": "mm",
+    "warning": "",
+    "alarm": ""
+  },
+  "mod12": {
+    "name": "6 - Distance",
+    "settings": "6,221,310,1",
+    "unit": "mm",
+    "warning": "",
+    "alarm": ""
+  },
+  "mod13": {
+    "name": "7 - Distance",
+    "settings": "7,221,310,1",
+    "unit": "mm",
+    "warning": "",
+    "alarm": ""
+  },
+  "mod14": {
+    "name": "8 - Distance",
+    "settings": "8,221,310,1",
+    "unit": "mm",
+    "warning": "",
+    "alarm": ""
+  },
+  "endpoint": {
+    "buffer_enable": true
+  },
+  "script": {
+    "num1": 8
+  }
+}
