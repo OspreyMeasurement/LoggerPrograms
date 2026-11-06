@@ -1,0 +1,194 @@
+'CR350 Series Datalogger
+'PMK2 v1.00 - ASCII and Modbus pressure debug version, 14/10/2026
+'Based on PMK2_V1.00.crb and CR350_ASP_Direct_debug.CRB
+
+'Polls get_pressure_raw once per sensor on both connected strings.
+'Stores the complete response text without parsing the pressure values.
+'Reads Modbus pressure and distance immediately after each sensor's ASCII query.
+'Closes and reopens the port when switching between ASCII and binary Modbus.
+'Stores both Modbus result codes separately; failed Modbus readings are NAN.
+'ASP firmware returns Pa: followed by three mean pressures and three standard deviations.
+'Array index is the sensor address, starting at 1 independently on each channel.
+
+'Osprey ASP2_1 Wiring (as supplied in PMK2_V1.00.crb):
+'Vin 12V (Red) = SW1 (SW12_1)
+'RS485 A (Blue) = Com2 (TX)
+'RS485 B (White) = Com2 (RX)
+'Ground (Black) = G
+
+'Osprey ASP2_2 Wiring (as supplied in PMK2_V1.00.crb):
+'Vin 12V (Red) = SW2 (SW12_2)
+'RS485 A (Blue) = Com3 (TX)
+'RS485 B (White) = Com3 (RX)
+'Ground (Black) = G
+
+'User Constants - sensor counts retained from the supplied PMK2 program
+Const No_ASP2_1 = 26
+Const No_ASP2_2 = 25
+Const Meas_Int = 5                  'Measurement interval in minutes
+Const ResponseTimeout = 1000        'SerialIn timeout in 0.01 seconds: 10 seconds
+Const NodeDelay_mSec = 500          'Rest between sensor queries
+
+'Fixed Constants
+Const Comport_ASP2_1 = Com2
+Const Comport_ASP2_2 = Com3
+Const BaudRate = 9600
+Const SerialBufferSize = 256        'Larger than a complete raw-pressure response
+Const PortResetDelay_mSec = 100
+Const PressureRegister = &HFF       'Same register and word order as PMK2_V1.00.crb
+Const DistanceRegister = &H101
+
+'Variables - General
+Public PTemp As Float
+Public Batt_V As Float
+Public i As Long
+Public StringCmd As String * 50
+
+'Variables - one raw response per sensor, kept separate for each channel
+Public ASP2_1_StringResponse(No_ASP2_1) As String * 100
+Public ASP2_2_StringResponse(No_ASP2_2) As String * 100
+
+'Variables - Modbus values and independent result codes for comparison
+Public ASP2_1_Pressure(No_ASP2_1) As Float
+Public ASP2_1_Distance(No_ASP2_1) As Float
+Public ASP2_1_PressureResultCode(No_ASP2_1) As Long
+Public ASP2_1_DistanceResultCode(No_ASP2_1) As Long
+Public ASP2_2_Pressure(No_ASP2_2) As Float
+Public ASP2_2_Distance(No_ASP2_2) As Float
+Public ASP2_2_PressureResultCode(No_ASP2_2) As Long
+Public ASP2_2_DistanceResultCode(No_ASP2_2) As Long
+
+Units Batt_V = Volts
+Units PTemp = Deg C
+Units ASP2_1_Pressure() = Pa
+Units ASP2_1_Distance() = mm
+Units ASP2_2_Pressure() = Pa
+Units ASP2_2_Distance() = mm
+
+'Define Data Table - stores both channels in the same scan record
+DataTable(PMK2_Debug_Data, True, -1)
+  DataInterval(0, Meas_Int, Min, -1)
+  Sample(1, Batt_V, FP2)
+  Sample(1, PTemp, FP2)
+  Sample(No_ASP2_1, ASP2_1_StringResponse(), String)
+  Sample(No_ASP2_1, ASP2_1_Pressure(), IEEE4)
+  Sample(No_ASP2_1, ASP2_1_Distance(), IEEE4)
+  Sample(No_ASP2_1, ASP2_1_PressureResultCode(), Long)
+  Sample(No_ASP2_1, ASP2_1_DistanceResultCode(), Long)
+  Sample(No_ASP2_2, ASP2_2_StringResponse(), String)
+  Sample(No_ASP2_2, ASP2_2_Pressure(), IEEE4)
+  Sample(No_ASP2_2, ASP2_2_Distance(), IEEE4)
+  Sample(No_ASP2_2, ASP2_2_PressureResultCode(), Long)
+  Sample(No_ASP2_2, ASP2_2_DistanceResultCode(), Long)
+EndTable
+
+'Main Program
+BeginProg
+  'Format 0 = 8 data bits, no parity, one stop bit; CommsMode 4 = half-duplex RS485.
+  SerialOpen(Comport_ASP2_1, BaudRate, 0, 0, SerialBufferSize, 4)
+  SerialOpen(Comport_ASP2_2, BaudRate, 0, 0, SerialBufferSize, 4)
+
+  'Start with both strings powered off; poll and power-cycle each independently.
+  SW12(SW12_1, 0)
+  SW12(SW12_2, 0)
+
+  Scan(Meas_Int, Min, 1, 0)
+    Battery(Batt_V)
+    PanelTemp(PTemp, 50)
+
+    'Clear previous readings before polling so missed sensors cannot show stale data.
+    For i = 1 To No_ASP2_1
+      ASP2_1_StringResponse(i) = "NO RESPONSE"
+      ASP2_1_Pressure(i) = NAN
+      ASP2_1_Distance(i) = NAN
+    Next i
+    For i = 1 To No_ASP2_2
+      ASP2_2_StringResponse(i) = "NO RESPONSE"
+      ASP2_2_Pressure(i) = NAN
+      ASP2_2_Distance(i) = NAN
+    Next i
+
+    'ASP2_1: COM2, SW12_1, sensor addresses 1 to 26
+    SW12(SW12_1, 1)
+    Delay(0, 3500 + No_ASP2_1 * 450, mSec)
+
+    For i = 1 To No_ASP2_1
+      'Reset back to ASCII, including after the preceding scan's binary reads.
+      SerialClose(Comport_ASP2_1)
+      Delay(0, PortResetDelay_mSec, mSec)
+      SerialOpen(Comport_ASP2_1, BaudRate, 0, 0, SerialBufferSize, 4)
+      SerialFlush(Comport_ASP2_1)
+      StringCmd = "op asp " & i & " get_pressure_raw" & CHR(10)
+      SerialOut(Comport_ASP2_1, StringCmd, "", 0, 100)
+
+      'Wait for LF (ASCII 10), up to 100 characters, or the response timeout.
+      'SerialIn waits for incoming data; its timeout resets with each character.
+      'The terminating LF is excluded; any partial response is kept for debugging.
+      ASP2_1_StringResponse(i) = ""
+      SerialIn(ASP2_1_StringResponse(i), Comport_ASP2_1, ResponseTimeout, 10, 100)
+      If Len(ASP2_1_StringResponse(i)) = 0 Then
+        ASP2_1_StringResponse(i) = "NO RESPONSE"
+      EndIf
+      Delay(0, NodeDelay_mSec, mSec)
+
+      'Reset for binary Modbus: format 3 preserves all byte values, 8N1 RS485.
+      SerialClose(Comport_ASP2_1)
+      Delay(0, PortResetDelay_mSec, mSec)
+      SerialOpen(Comport_ASP2_1, BaudRate, 3, 0, SerialBufferSize, 4)
+      SerialFlush(Comport_ASP2_1)
+
+      ModbusMaster(ASP2_1_PressureResultCode(i),Comport_ASP2_1,BaudRate,i,3,ASP2_1_Pressure(i),PressureRegister,1,1,100,2)
+      If ASP2_1_PressureResultCode(i) <> 0 Then
+        ASP2_1_Pressure(i) = NAN
+      EndIf
+      Delay(0, NodeDelay_mSec, mSec)
+      ModbusMaster(ASP2_1_DistanceResultCode(i),Comport_ASP2_1,BaudRate,i,3,ASP2_1_Distance(i),DistanceRegister,1,1,100,2)
+      If ASP2_1_DistanceResultCode(i) <> 0 Then
+        ASP2_1_Distance(i) = NAN
+      EndIf
+      Delay(0, NodeDelay_mSec, mSec)
+    Next i
+
+    SW12(SW12_1, 0)
+
+    'ASP2_2: COM3, SW12_2, sensor addresses 1 to 25
+    SW12(SW12_2, 1)
+    Delay(0, 3500 + No_ASP2_2 * 450, mSec)
+
+    For i = 1 To No_ASP2_2
+      SerialClose(Comport_ASP2_2)
+      Delay(0, PortResetDelay_mSec, mSec)
+      SerialOpen(Comport_ASP2_2, BaudRate, 0, 0, SerialBufferSize, 4)
+      SerialFlush(Comport_ASP2_2)
+      StringCmd = "op asp " & i & " get_pressure_raw" & CHR(10)
+      SerialOut(Comport_ASP2_2, StringCmd, "", 0, 100)
+
+      ASP2_2_StringResponse(i) = ""
+      SerialIn(ASP2_2_StringResponse(i), Comport_ASP2_2, ResponseTimeout, 10, 100)
+      If Len(ASP2_2_StringResponse(i)) = 0 Then
+        ASP2_2_StringResponse(i) = "NO RESPONSE"
+      EndIf
+      Delay(0, NodeDelay_mSec, mSec)
+
+      SerialClose(Comport_ASP2_2)
+      Delay(0, PortResetDelay_mSec, mSec)
+      SerialOpen(Comport_ASP2_2, BaudRate, 3, 0, SerialBufferSize, 4)
+      SerialFlush(Comport_ASP2_2)
+
+      ModbusMaster(ASP2_2_PressureResultCode(i),Comport_ASP2_2,BaudRate,i,3,ASP2_2_Pressure(i),PressureRegister,1,1,100,2)
+      If ASP2_2_PressureResultCode(i) <> 0 Then
+        ASP2_2_Pressure(i) = NAN
+      EndIf
+      Delay(0, NodeDelay_mSec, mSec)
+      ModbusMaster(ASP2_2_DistanceResultCode(i),Comport_ASP2_2,BaudRate,i,3,ASP2_2_Distance(i),DistanceRegister,1,1,100,2)
+      If ASP2_2_DistanceResultCode(i) <> 0 Then
+        ASP2_2_Distance(i) = NAN
+      EndIf
+      Delay(0, NodeDelay_mSec, mSec)
+    Next i
+
+    SW12(SW12_2, 0)
+
+    CallTable PMK2_Debug_Data
+  NextScan
+EndProg

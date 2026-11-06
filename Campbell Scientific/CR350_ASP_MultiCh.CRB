@@ -85,10 +85,10 @@ Sub ReadOspreyArray
         ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Distance(ch, i), 257, 1, 1, 300, 2)
         Delay(0, 80, mSec)
         
-        ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Voltage(ch, i), 259, 2, 1, 200, 2)
+        ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Voltage(ch, i), 259, 1, 1, 200, 2)
         Delay(0, 40, mSec)
         
-        ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Temperature(ch, i), 261, 2, 1, 200, 2)
+        ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Temperature(ch, i), 261, 1, 1, 200, 2)
         Delay(0, 80, mSec)
         
         

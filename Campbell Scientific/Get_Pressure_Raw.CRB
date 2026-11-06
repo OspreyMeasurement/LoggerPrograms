@@ -1,0 +1,85 @@
+' -------------------------------------------------------------------------
+' CR350 ASCII Debugging Script for ASP Sensor Array
+' Multiplexer: AM16/32 - Hardcoded to Channel 1
+' -------------------------------------------------------------------------
+
+' Define Logger Terminals
+Const MuxRES = C1       
+Const MuxCLK = C2       
+Const AsciiPort = Com2  
+
+' User Variables
+Public TargetAddress As Long
+Public RawResponses(10) As String * 50
+
+' System Variables
+Public i As Long
+Public CommandStr As String * 50
+
+' Define the Data Table to store the 10 readings
+DataTable(DebugData, True, -1)
+  Sample(10, RawResponses(), String)
+EndTable
+
+' -------------------------------------------------------------------------
+' MAIN PROGRAM
+' -------------------------------------------------------------------------
+BeginProg
+  ' Open COM2 port for ASCII communication at 9600 baud 
+  SerialOpen(AsciiPort, 9600, 0, 0, 100, 4) 
+
+  ' Set default Target Address (editable live via LoggerNet/PC400)
+  TargetAddress = 1 
+  
+  ' Set the scan interval to 1 minute for manual trigger testing
+  Scan(1, Min, 0, 0)
+    
+    ' 1. MULTIPLEXER CONTROL & POWER UP
+    
+    PortSet(MuxRES, 0)
+    
+    Delay(0, 10, mSec)
+    
+    PortSet(MuxRES, 1) 
+    Delay(0, 10, mSec) 
+    
+    PortSet(MuxCLK, 1) 
+    Delay(0, 10, mSec)
+    PortSet(MuxCLK, 0) 
+    
+    ' 2. SENSOR WARM-UP DELAY
+    ' Generous 5-second delay to ensure the array is awake and ready
+    Delay(0, 5, Sec)
+    
+    ' 3. ASCII POLLING LOOP
+    For i = 1 To 10
+      ' Clear out old data for this index
+      RawResponses(i) = ""
+      
+      ' Clear the serial buffer to avoid reading leftover junk
+      SerialFlush(AsciiPort)
+      
+      ' Construct the command with the user-settable address and \n (CHR(10))
+      CommandStr = "op asp " & TargetAddress & " get_pressure_raw" & CHR(10)
+      
+      ' Send the command string
+      SerialOut(AsciiPort, CommandStr, "", 0, 100)
+      
+      ' Give the sensor a moment to process and reply
+      Delay(0, 150, mSec) 
+      
+      ' Read up to 50 characters from the port into the string array
+      SerialIn(RawResponses(i), AsciiPort, 100, 0, 50)
+      
+      ' Short rest before the next query
+      Delay(0, 1000, mSec)
+    Next i
+    
+    ' Save the data to memory
+    CallTable(DebugData)
+    
+    ' Note: MuxRES is intentionally NOT set to 0 here. 
+    ' The system remains powered up between readings as requested.
+    
+  NextScan
+EndProg

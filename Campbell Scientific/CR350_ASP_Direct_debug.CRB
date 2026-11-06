@@ -1,0 +1,93 @@
+'CR350 Series
+'ASCII Troubleshooting Script for Osprey Measurement Systems
+'v1.0 - Diagnostic
+
+'Osprey ASP CR350 Wiring:
+'Vin 12V (Red) = SW12-1
+'RS485 A (Blue) = RX (Note: Try flipping A/B if no response)
+'RS485 B (White) = TX
+'Ground (Black) = G
+
+'User Constants
+Const No_ASP_nodes = 3          'Enter number of ASP nodes to be read
+Const Meas_Int = 2              'Enter measurement interval in minutes
+
+'Fixed Constants
+Const Comport = Com2
+Const BaudRate = 9600
+
+'Variables and Units
+Public PTemp As Float
+Public Batt_V As Float
+Public i As Long
+Public BytesReturned As Long
+
+'ASCII Command Variables
+Public StringCmd As String * 50
+Public StringResponse(No_ASP_nodes) As String * 100
+
+Units Batt_V = Volts
+Units PTemp = Deg C
+
+'Define Data Tables
+'Modified to store the raw String responses for troubleshooting
+DataTable(ASP_ASCII_Data, True, -1)
+  DataInterval(0, Meas_Int, Min, -1)
+  Sample(1, Batt_V, FP2)
+  Sample(1, PTemp, FP2)
+  Sample(No_ASP_nodes, StringResponse(), String)
+EndTable
+
+'Main Program
+BeginProg
+  'Open Com2 for RS-485 communications at 9600 baud, 8 data bits, even parity, 1 stop bit
+  SerialOpen(Comport, BaudRate, 0, 0, 50, 4)
+  
+  'Main Scan
+  Scan(Meas_Int, Min, 1, 0)
+    
+    'Power Out
+    SW12(SW12_1, 1)
+    
+    'Wait for string to boot and capture
+    Delay(0, 2500 + No_ASP_nodes * 500, mSec)
+    
+    'Default Datalogger Health Measurements
+    Battery(Batt_V)
+    PanelTemp(PTemp, 50)
+    
+    'Clear out old responses so a dead sensor doesn't show old data
+    For i = 1 To No_ASP_nodes
+      StringResponse(i) = "NO RESPONSE"
+    Next i
+
+    'ASCII Polling Loop
+    For i = 1 To No_ASP_nodes
+      'Clear the serial buffer of any lingering noise
+      SerialFlush(Comport)
+      
+      'Build the command string dynamically with the current sensor's address
+      'CHR(10) is the \n (Line Feed) character
+      StringCmd = "op asp " & i & " get_pressure_raw" & CHR(10)
+      
+      'Send the ASCII command out the COM port
+      SerialOut(Comport, StringCmd, "", 0, 100)
+      
+      'Wait a moment for the sensor to process and reply
+      Delay(0, 200, mSec)
+      
+      'Capture the response looking for an incoming string ending in Line Feed (Hex 0A)
+      SerialInRecord(Comport, StringResponse(i), 0, 0, &H0A, BytesReturned, 01)
+      
+      'Node transition delay
+      Delay(0, 100, mSec)
+    Next i
+    
+    'Call Data Tables and Store Data
+    CallTable ASP_ASCII_Data
+    
+    'Turn off SW12V
+    SW12(SW12_1, 0)
+  
+  NextScan
+EndProg

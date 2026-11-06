@@ -1,0 +1,238 @@
+' -------------------------------------------------------------------------
+' CR350 Reference Code for Osprey ASP Sensor Array
+' Multiplexer: AM16/32 (4x16 Mode) - Multi-Channel Support
+' Includes Dynamic Custom ASCII Fallback on Modbus Failure or -0.09 Result
+' -------------------------------------------------------------------------
+
+' Define Logger Terminals
+Const MuxRES = C1        
+Const MuxCLK = C2        
+Const ModbusPort = Com2 ' Matches the physical COM2 Rx/Tx terminals
+
+' =========================================================================
+' USER CONFIGURATION
+' =========================================================================
+' 1. Define Multiplexer Channels (Max 16 in 4x16 mode)
+Const NUM_CHANNELS = 5
+
+' 2. Define the max number of sensors on ANY single channel
+' (Required to allocate logger memory. Set high enough for your largest array)
+Const MAX_SENSORS = 11
+
+' Configuration arrays (Editable live via LoggerNet/PC400)
+Public SensorCount(NUM_CHANNELS) As Long
+Public ArrayName(NUM_CHANNELS) As String * 20
+
+' Declare State Variables
+Public PTemp As Float
+Public batt_volt As Float
+Public ch As Long        ' Mux Channel Index
+Public i As Long         ' Sensor Index
+Public MBResult As Long   
+
+' Added variables for ASCII fallback loop (Public for live monitoring)
+Public AsciiAttempt As Long
+Public RawStr As String * 100
+Public spacePos As Long
+Public CleanNumber As String * 20
+
+' Modbus Data Variables (2D Arrays: Channel, Sensor Index)
+Public Distance(NUM_CHANNELS, MAX_SENSORS) As Float
+Public Voltage(NUM_CHANNELS, MAX_SENSORS) As Float
+Public Temperature(NUM_CHANNELS, MAX_SENSORS) As Float
+
+' Define the Data Table
+DataTable(OspreyData, True, -1)
+  DataInterval(0, 15, Min, 10)
+  
+  ' Sample the names for reference
+  Sample(NUM_CHANNELS, ArrayName(), String)
+  
+  ' Flattened 2D Arrays (Stores all channels & all max possible sensors)
+  Sample(NUM_CHANNELS * MAX_SENSORS, Distance(), IEEE4)
+  Sample(NUM_CHANNELS * MAX_SENSORS, Voltage(), FP2)
+  Sample(NUM_CHANNELS * MAX_SENSORS, Temperature(), FP2)
+
+EndTable
+
+' -------------------------------------------------------------------------
+' MEASUREMENT SUBROUTINE
+' -------------------------------------------------------------------------
+Sub ReadOspreyArray
+  Dim WarmupDelay_mSec As Long
+  Dim ValidRead As Boolean
+  Dim CommandStr As String * 50  
+  Dim DistFailed As Boolean ' Used to track if the Modbus Distance read failed
+  
+  ' Reset ALL possible array elements to NAN to prevent stale data
+  Dim r As Long, c As Long
+  For r = 1 To NUM_CHANNELS
+    For c = 1 To MAX_SENSORS
+      Distance(r, c) = NAN
+      Voltage(r, c) = NAN
+      Temperature(r, c) = NAN
+    Next c
+  Next r
+
+  ' 1. MULTIPLEXER CONTROL & POWER UP
+  PortSet(MuxRES, 1) 
+  Delay(0, 10, mSec)
+  
+  ' Loop through each defined multiplexer channel
+  For ch = 1 To NUM_CHANNELS 
+    
+    ' Clock the multiplexer to advance to the next channel
+    PortSet(MuxCLK, 1) 
+    Delay(0, 10, mSec)
+    PortSet(MuxCLK, 0) 
+    
+    ' Only execute if sensors are configured for this specific channel
+    If SensorCount(ch) > 0 Then
+      
+      ' 2. SENSOR WARM-UP DELAY (Calculated dynamically per channel)
+      WarmupDelay_mSec = 3500 + (450 * SensorCount(ch)) 
+      Delay(0, WarmupDelay_mSec, mSec) 
+
+      ' 3. POLLING LOOP (Closest to Farthest)
+      For i = 1 To SensorCount(ch)
+                
+        ' --- 3a. STANDARD MODBUS POLLING ---
+        
+        ' Read Voltage
+        ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Voltage(ch, i), 259, 1, 1, 500, 2)
+        Delay(0, 100, mSec)
+
+        ' Read Distance and check for Modbus communication failure OR a -0.09 error payload
+        ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Distance(ch, i), 257, 1, 1, 500, 2)
+        
+        ' If Modbus fails entirely (MBResult <> 0) OR if the sensor passes exactly -0.09
+        If MBResult <> 0 Or Distance(ch, i) = -0.09 Then
+          DistFailed = True
+        Else
+          DistFailed = False
+        EndIf
+        Delay(0, 100, mSec)
+        
+        ' Read Temperature
+        ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Temperature(ch, i), 261, 1, 1, 500, 2)
+        Delay(0, 100, mSec)
+
+        ' --- 3b. ASCII FALLBACK (Triggers only if Modbus Distance Read Failed or returned -0.09) ---
+        If DistFailed = True Then
+          
+          ValidRead = False
+          AsciiAttempt = 0
+          
+          ' Give the sensor a brief moment to recover from Modbus mode
+          Delay(0, 250, mSec)
+          
+          ' 1. PORT RESET: Force the COM port out of Modbus mode
+          SerialClose(ModbusPort)
+          Delay(0, 100, mSec)
+          SerialOpen(ModbusPort, 9600, 0, 0, 1000, 4)
+          
+          ' Loop up to 10 times to get a valid ASCII Distance reading
+          While (ValidRead = False) And (AsciiAttempt < 10)
+            AsciiAttempt += 1
+            RawStr = "" ' Clears out previous attempts
+            
+            SerialFlush(ModbusPort) 
+            
+            CommandStr = "op asp " & i & " get_height" & CHR(10)
+            SerialOut(ModbusPort, CommandStr, "", 0, 100)
+            Delay(0, 150, mSec) 
+            
+            ' Wait for response
+            SerialIn(RawStr, ModbusPort, 1000, 10, 50) 
+            
+            ' Find the LAST space by searching from the end of the string (SearchOption 9)
+            spacePos = InStr(1, RawStr, " ", 9) 
+            
+            If spacePos > 0 Then
+              ' Extract everything after that last space
+              CleanNumber = Mid(RawStr, spacePos + 1, 20)
+              
+              ' Scrub away any hidden carriage returns or line feeds
+              CleanNumber = Replace(CleanNumber, CHR(13), "")
+              CleanNumber = Replace(CleanNumber, CHR(10), "")
+              
+              ' Cast the clean string to the Float array
+              Distance(ch, i) = CleanNumber
+              
+              ' Validate the parsed number (Filter out NAN and negatives like -0.09)
+              If Distance(ch, i) > 0 Then
+                ValidRead = True 
+              EndIf
+            EndIf
+            
+            ' If invalid or parsing failed, wait 500ms before repeating
+            If ValidRead = False Then
+              Delay(0, 500, mSec)
+            EndIf
+          Wend
+          
+          ' If 10 attempts failed, ensure we return NAN instead of keeping -0.09 or other bad data
+          If ValidRead = False Then
+            Distance(ch, i) = NAN
+          EndIf
+          
+          ' 2. RETURN TO MODBUS: Reset port for the rest of the sensors
+          SerialClose(ModbusPort)
+          Delay(0, 100, mSec)
+          SerialOpen(ModbusPort, 9600, 0, 0, 1000, 4)
+          
+        EndIf
+        
+        ' 4. NODE TRANSITION DELAY
+        Delay(0, 500, mSec)
+      Next i
+      
+    EndIf
+  Next ch
+  
+  ' 5. SHUTDOWN ARRAY & POWER CYCLE
+  PortSet(MuxRES, 0) 
+EndSub
+
+' -------------------------------------------------------------------------
+' MAIN PROGRAM
+' -------------------------------------------------------------------------
+BeginProg
+  ' Open COM port for Modbus with 1000-byte buffer
+  SerialOpen(ModbusPort, 9600, 0, 0, 1000, 4)
+
+  ' =======================================================================
+  ' INITIALIZE CHANNEL CONFIGURATIONS
+  ' =======================================================================
+  ArrayName(1) = "L5_1"
+  SensorCount(1) = 11
+
+  ArrayName(2) = "L5_2"
+  SensorCount(2) = 11
+
+  ArrayName(3) = "L6"
+  SensorCount(3) = 9
+
+  ArrayName(4) = "L7_1"
+  SensorCount(4) = 8 
+
+  ArrayName(5) = "L7_2"
+  SensorCount(5) = 8 
+  
+
+  ' =======================================================================
+  ' RUN ON STARTUP / POWER CYCLE
+  ' =======================================================================
+  Call ReadOspreyArray
+
+  ' =======================================================================
+  ' RUN ON SCHEDULED INTERVAL
+  ' =======================================================================
+  Scan(15, Min, 0, 0)
+    PanelTemp(PTemp, 60)
+    Battery(batt_volt)
+
+    Call ReadOspreyArray
+    CallTable(OspreyData)
+  NextScan
+EndProg

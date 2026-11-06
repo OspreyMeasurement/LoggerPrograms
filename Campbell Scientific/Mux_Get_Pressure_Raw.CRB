@@ -1,0 +1,92 @@
+' -------------------------------------------------------------------------
+' CR350 ASCII Debugging Script for ASP Sensor Array
+' Target: Channel 1, Sensor 11 Only (Three ASCII Commands, \n Termination)
+' -------------------------------------------------------------------------
+
+' Define Logger Terminals
+Const MuxRES = C1       
+Const MuxCLK = C2       
+Const AsciiPort = Com2  
+
+' Variables for storing the string responses
+Public RawPressure As String * 50
+Public RawStatus As String * 400
+Public RawHeight As String * 50
+Public CommandStr As String * 50
+
+' Define the Data Table to store the historical readings
+DataTable(AsciiDebug, True, -1)
+  Sample(1, RawPressure, String)
+  Sample(1, RawStatus, String)
+  Sample(1, RawHeight, String)
+EndTable
+
+' -------------------------------------------------------------------------
+' MAIN PROGRAM
+' -------------------------------------------------------------------------
+BeginProg
+  ' Open COM2 port for ASCII communication at 9600 baud (Format 4 = 8N1 ASCII)
+  SerialOpen(AsciiPort, 9600, 0, 0, 100, 4) 
+
+  ' Set the scan interval to 1 minute to repeat the power cycle and queries
+  Scan(1, Min, 0, 0)
+    
+    ' 1. MULTIPLEXER CONTROL & POWER UP
+    ' Briefly drop RES to 0 to reset the multiplexer channel counter
+    PortSet(MuxRES, 0)
+    Delay(0, 10, mSec)
+    
+    ' Raise RES to 1 to enable the multiplexer
+    PortSet(MuxRES, 1) 
+    Delay(0, 10, mSec) 
+    
+    ' Clock once to advance from the reset state to Channel 1
+    PortSet(MuxCLK, 1) 
+    Delay(0, 10, mSec)
+    PortSet(MuxCLK, 0) 
+    
+    ' 2. SENSOR WARM-UP DELAY
+    ' Generous delay for 11 sensors to fully boot: 3500 + (450 * 11)
+    Delay(0, 8450, mSec)
+    
+    ' 3. ASCII COMMAND 1: get_pressure_raw
+    RawPressure = ""
+    SerialFlush(AsciiPort)
+    CommandStr = "op asp 1 get_pressure_raw" & CHR(10)
+    
+    SerialOut(AsciiPort, CommandStr, "", 0, 100)
+    Delay(0, 150, mSec) 
+    ' Listen until 50 chars, timeout, OR character 10 (\n) is received
+    SerialIn(RawPressure, AsciiPort, 1000, 10, 50)
+    
+    ' Short rest between commands
+    Delay(0, 200, mSec) 
+
+    ' 4. ASCII COMMAND 2: get_status
+    RawStatus = ""
+    SerialFlush(AsciiPort)
+    CommandStr = "op bus 1 cat w_asp_config.json" & CHR(10)
+    
+    SerialOut(AsciiPort, CommandStr, "", 0, 100)
+    SerialIn(RawStatus, AsciiPort, 400,-1,350)
+    
+    ' Short rest between commands
+    Delay(0, 500, mSec) 
+
+    ' 5. ASCII COMMAND 3: get_height
+    RawHeight = ""
+    SerialFlush(AsciiPort)
+    CommandStr = "op asp 1 get_height" & CHR(10)
+    
+    SerialOut(AsciiPort, CommandStr, "", 0, 100)
+    Delay(0, 150, mSec) 
+    SerialIn(RawHeight, AsciiPort, 1000, 10, 50)
+    
+    ' 6. POWER DOWN THE ARRAY
+    PortSet(MuxRES, 0)
+    
+    ' Save the current scan's data into the historical table
+    CallTable(AsciiDebug)
+    
+  NextScan
+EndProg

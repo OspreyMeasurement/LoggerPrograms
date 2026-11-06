@@ -1,0 +1,81 @@
+' -------------------------------------------------------------------------
+' CR350 Code for Osprey ASP Sensor Array 
+' ASCII Diagnostic Script - Get Heights
+' -------------------------------------------------------------------------
+' WIRING GUIDE
+' RS485 A (Blue)   = Com2 RX 
+' RS485 B (White)  = Com2 TX
+' 12V Power (Red)  = SW12_1
+' Ground (Black)   = G
+' -------------------------------------------------------------------------
+
+Const Comport = Com2
+Const BaudRate = 9600
+Const No_ASP_nodes = 9 ' Enter n nodes in your ASP array         
+Const Meas_Int = 2  ' Scan every n minutes            
+
+' Variables
+Public PTemp As Float
+Public Batt_V As Float
+Public i As Long
+Public StringCmd As String * 50
+
+' Array to hold the full incoming string
+Public StringResponse(No_ASP_nodes) As String * 100
+
+Units Batt_V = Volts
+Units PTemp = Deg C
+
+DataTable(DiagStringTable, True, -1)
+  DataInterval(0, Meas_Int, Min, -1)
+  Sample(1, Batt_V, FP2)
+  Sample(1, PTemp, FP2)
+  Sample(No_ASP_nodes, StringResponse(), String)
+EndTable
+
+' -------------------------------------------------------------------------
+' MAIN PROGRAM
+' -------------------------------------------------------------------------
+BeginProg
+  
+  SerialOpen(Comport, BaudRate, 0, 0, 200, 4)
+  
+  Scan(Meas_Int, Min, 1, 0)
+    
+    ' Power Out
+    SW12(SW12_1, 1)
+    
+    ' Wait for array to boot
+    Delay(0, 2500 + No_ASP_nodes * 500, mSec)
+    
+    Battery(Batt_V)
+    PanelTemp(PTemp, 50)
+
+    
+    For i = 1 To No_ASP_nodes
+      StringResponse(i) = "No Response"
+    Next i
+
+    ' ASCII Polling Loop
+    For i = 1 To No_ASP_nodes
+      
+      SerialFlush(Comport)
+      
+      ' Request height
+      StringCmd = "op asp " & i & " get_height" & CHR(10) 
+      SerialOut(Comport, StringCmd, "", 0, 100)
+      
+      ' Wait for the sensor to process
+      Delay(0, 500, mSec)
+      
+      SerialIn(StringResponse(i), Comport, 100, 0, 100)
+      
+      Delay(0, 200, mSec)
+    Next i
+    
+    CallTable DiagStringTable
+
+    SW12(SW12_1, 0)
+  
+  NextScan
+EndProg

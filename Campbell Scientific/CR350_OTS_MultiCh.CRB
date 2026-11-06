@@ -1,0 +1,274 @@
+' CR350 / Osprey OTS / AM16/32 in 4x16 mode
+' Mux wiring: C1 -> RES, C2 -> CLK, COM2 -> switched RS-485.
+' Switch all four array conductors (12 V, ground, A, B) through the mux.
+' COM2 RX -> Osprey A (blue); COM2 TX -> Osprey B (white).
+' Each string: aliases 1..SensorCount, 9600 8N1, measure_on_boot=1,
+' broadcast_on_wake=0. This program does not change sensor configuration.
+
+' =========================================================================
+' USER CONFIGURATION - edit here, then compile and send the program
+' =========================================================================
+Const MEAS_INTERVAL_MIN = 5
+Const NUM_CHANNELS = 8       ' Highest physical channel used: 1..16
+Const MAX_SENSORS = 7       ' Array capacity per channel: 1..247
+
+' Initial timing estimates: verify on the installed strings and firmware.
+Const BOOT_BASE_MS = 3500
+Const BOOT_PER_SENSOR_MS = 550
+Const MODBUS_TRIES = 2
+Const MODBUS_TIMEOUT_10MS = 200  ' Campbell timeout units: 0.01 s (200 = 2 s)
+Const NODE_DELAY_MS = 120
+Const MUX_RESET_MS = 1000        ' Minimum all-channel power-off time per sweep
+Const MUX_PULSE_MS = 10
+
+Public SensorCount(NUM_CHANNELS) As Long
+Public ArrayName(NUM_CHANNELS) As String * 20
+
+' Configure each PHYSICAL mux channel. Zero skips polling, but still clocks
+' past that channel. Only cases 1..NUM_CHANNELS are used. Names: 19 characters
+' maximum (String * 20 includes the terminating null). These are examples.
+Sub ConfigureChannels
+  Dim ConfigCh As Long
+  For ConfigCh = 1 To NUM_CHANNELS
+    Select Case ConfigCh
+      Case 1
+        ArrayName(ConfigCh) = "Array01"
+        SensorCount(ConfigCh) = 7
+      Case 2
+        ArrayName(ConfigCh) = "Array02"
+        SensorCount(ConfigCh) = 7
+      Case 3
+        ArrayName(ConfigCh) = "Unused03"
+        SensorCount(ConfigCh) = 7
+      Case 4
+        ArrayName(ConfigCh) = "Array04"
+        SensorCount(ConfigCh) = 7
+      Case 5
+        ArrayName(ConfigCh) = "Array05"
+        SensorCount(ConfigCh) = 7
+      Case 6
+        ArrayName(ConfigCh) = "Array06"
+        SensorCount(ConfigCh) = 7
+      Case 7
+        ArrayName(ConfigCh) = "Array07"
+        SensorCount(ConfigCh) = 7
+      Case 8
+        ArrayName(ConfigCh) = "Array08"
+        SensorCount(ConfigCh) = 7
+      Case 9
+        ArrayName(ConfigCh) = "Array09"
+        SensorCount(ConfigCh) = 0
+      Case 10
+        ArrayName(ConfigCh) = "Array10"
+        SensorCount(ConfigCh) = 0
+      Case 11
+        ArrayName(ConfigCh) = "Array11"
+        SensorCount(ConfigCh) = 0
+      Case 12
+        ArrayName(ConfigCh) = "Array12"
+        SensorCount(ConfigCh) = 0
+      Case 13
+        ArrayName(ConfigCh) = "Array13"
+        SensorCount(ConfigCh) = 0
+      Case 14
+        ArrayName(ConfigCh) = "Array14"
+        SensorCount(ConfigCh) = 0
+      Case 15
+        ArrayName(ConfigCh) = "Array15"
+        SensorCount(ConfigCh) = 0
+      Case 16
+        ArrayName(ConfigCh) = "Array16"
+        SensorCount(ConfigCh) = 0
+    EndSelect
+  Next ConfigCh
+EndSub
+' ======================= END USER CONFIGURATION ==========================
+
+Const MuxRES = C1
+Const MuxCLK = C2
+Const ModbusPort = Com2
+Const BaudRate = 9600
+Const NOT_POLLED = -9999       ' Local sentinel, not a Campbell result code
+Const NO_SENSOR_STATUS = -1   ' No valid response received in this sweep
+
+Public Batt_V As Float
+Public PTemp As Float
+Public SweepDuration_s As Float
+Public SweepOverrun As Long   ' 1 if sweep duration >= configured interval
+Public ConfigError As Long    ' 0 OK; 1 channels; 2 capacity; 3 timing; 4 counts
+Public ChannelConfigError(NUM_CHANNELS) As Long ' 1 = invalid sensor count
+Public CurrentChannel As Long
+Public CurrentSensor As Long
+Public OTS_V(NUM_CHANNELS,MAX_SENSORS) As Float
+Public OTS_DegC(NUM_CHANNELS,MAX_SENSORS) As Float
+Public OTS_X(NUM_CHANNELS,MAX_SENSORS) As Float
+Public OTS_Y(NUM_CHANNELS,MAX_SENSORS) As Float
+Public OTS_Z(NUM_CHANNELS,MAX_SENSORS) As Float
+Public OTS_Roll(NUM_CHANNELS,MAX_SENSORS) As Float
+Public OTS_Pitch(NUM_CHANNELS,MAX_SENSORS) As Float
+Public OTS_Yaw(NUM_CHANNELS,MAX_SENSORS) As Float
+Public OTS_Status(NUM_CHANNELS,MAX_SENSORS) As Long
+Public OTS_ResultCode(NUM_CHANNELS,MAX_SENSORS) As Long
+Public OTS_Valid(NUM_CHANNELS,MAX_SENSORS) As Long ' 1 = comms OK AND status 0
+
+' Snapshot settings so a live edit cannot change loop bounds or the names
+' recorded for a sweep already in progress. Source settings reload on boot.
+Dim SweepSensorCount(NUM_CHANNELS) As Long
+Dim SweepArrayName(NUM_CHANNELS) As String * 20
+Dim RawRegisters(24) As Long
+Dim ch As Long, i As Long
+Dim WarmupDelay_ms As Long
+
+Units Batt_V = Volts
+Units PTemp = Deg C
+Units SweepDuration_s = seconds
+Units OTS_V() = Volts
+Units OTS_DegC() = Deg C
+Units OTS_X() = g
+Units OTS_Y() = g
+Units OTS_Z() = g
+Units OTS_Roll() = Rad
+Units OTS_Pitch() = Rad
+Units OTS_Yaw() = Rad
+
+DataTable(OTS_Data,True,-1)
+  DataInterval(0,MEAS_INTERVAL_MIN,Min,10)
+  Sample(1,Batt_V,IEEE4)
+  Sample(1,PTemp,IEEE4)
+  Sample(1,SweepDuration_s,IEEE4)
+  Sample(1,SweepOverrun,Long)
+  Sample(1,ConfigError,Long)
+  Sample(NUM_CHANNELS,SweepArrayName(),String)
+  Sample(NUM_CHANNELS,SweepSensorCount(),Long)
+  Sample(NUM_CHANNELS,ChannelConfigError(),Long)
+  ' Campbell expands the 2D arrays into stable (channel,sensor) fields.
+  ' Unused capacity is retained as NAN / not-polled / invalid, never zero tilt.
+  Sample(NUM_CHANNELS * MAX_SENSORS,OTS_V(),IEEE4)
+  Sample(NUM_CHANNELS * MAX_SENSORS,OTS_DegC(),IEEE4)
+  Sample(NUM_CHANNELS * MAX_SENSORS,OTS_X(),IEEE4)
+  Sample(NUM_CHANNELS * MAX_SENSORS,OTS_Y(),IEEE4)
+  Sample(NUM_CHANNELS * MAX_SENSORS,OTS_Z(),IEEE4)
+  Sample(NUM_CHANNELS * MAX_SENSORS,OTS_Roll(),IEEE4)
+  Sample(NUM_CHANNELS * MAX_SENSORS,OTS_Pitch(),IEEE4)
+  Sample(NUM_CHANNELS * MAX_SENSORS,OTS_Yaw(),IEEE4)
+  Sample(NUM_CHANNELS * MAX_SENSORS,OTS_Status(),Long)
+  Sample(NUM_CHANNELS * MAX_SENSORS,OTS_ResultCode(),Long)
+  Sample(NUM_CHANNELS * MAX_SENSORS,OTS_Valid(),Long)
+EndTable
+
+' RawRegisters holds unsigned 16-bit words in 32-bit Longs. The CR350 stores
+' numbers little-endian. Copy LOW word to bytes 0..1, HIGH word to bytes 2..3
+' of the float. This reinterprets the IEEE-754 bits; it does not convert an
+' integer numerically to a float or depend on overflowing signed arithmetic.
+Sub DecodeOTSFloat(HighWord As Long, LowWord As Long, Value As Float)
+  MoveBytes(Value,0,LowWord,0,2)
+  MoveBytes(Value,2,HighWord,0,2)
+EndSub
+
+Sub DecodeOTSResponse
+  ' Buffer index = physical register - 256 + 1; 256..257 are unused by OTS.
+  Call DecodeOTSFloat(RawRegisters(3),RawRegisters(4),OTS_V(ch,i))
+  Call DecodeOTSFloat(RawRegisters(5),RawRegisters(6),OTS_DegC(ch,i))
+  Call DecodeOTSFloat(RawRegisters(7),RawRegisters(8),OTS_X(ch,i))
+  Call DecodeOTSFloat(RawRegisters(9),RawRegisters(10),OTS_Y(ch,i))
+  Call DecodeOTSFloat(RawRegisters(11),RawRegisters(12),OTS_Z(ch,i))
+  Call DecodeOTSFloat(RawRegisters(13),RawRegisters(14),OTS_Roll(ch,i))
+  Call DecodeOTSFloat(RawRegisters(15),RawRegisters(16),OTS_Pitch(ch,i))
+  Call DecodeOTSFloat(RawRegisters(17),RawRegisters(18),OTS_Yaw(ch,i))
+  OTS_Status(ch,i) = RawRegisters(24) ' Physical 279, ONE 16-bit register
+  If OTS_Status(ch,i) = 0 Then OTS_Valid(ch,i) = 1
+EndSub
+
+Sub ReadOspreyArrays
+  SweepDuration_s = Timer(1,Sec,2)
+  CurrentChannel = 0
+  CurrentSensor = 0
+  SweepOverrun = 0
+  ConfigError = 0
+  PortSet(MuxRES,0)
+  PortSet(MuxCLK,0)
+  Battery(Batt_V)
+  PanelTemp(PTemp,50)
+
+  For ch = 1 To NUM_CHANNELS
+    SweepSensorCount(ch) = SensorCount(ch)
+    SweepArrayName(ch) = ArrayName(ch)
+    ChannelConfigError(ch) = 0
+    If SweepSensorCount(ch) < 0 OR SweepSensorCount(ch) > MAX_SENSORS OR SweepSensorCount(ch) > 247 Then
+      ChannelConfigError(ch) = 1
+      ConfigError = 4
+    EndIf
+    For i = 1 To MAX_SENSORS
+      OTS_V(ch,i) = NAN
+      OTS_DegC(ch,i) = NAN
+      OTS_X(ch,i) = NAN
+      OTS_Y(ch,i) = NAN
+      OTS_Z(ch,i) = NAN
+      OTS_Roll(ch,i) = NAN
+      OTS_Pitch(ch,i) = NAN
+      OTS_Yaw(ch,i) = NAN
+      OTS_Status(ch,i) = NO_SENSOR_STATUS
+      OTS_ResultCode(ch,i) = NOT_POLLED
+      OTS_Valid(ch,i) = 0
+    Next i
+  Next ch
+
+  ' Array dimensions / interval may also be rejected by the compiler.
+  ' Fail with the mux OFF if global settings are outside supported bounds.
+  If NUM_CHANNELS < 1 OR NUM_CHANNELS > 16 Then ConfigError = 1
+  If MAX_SENSORS < 1 OR MAX_SENSORS > 247 Then ConfigError = 2
+  If MEAS_INTERVAL_MIN < 1 OR BOOT_BASE_MS < 0 OR BOOT_PER_SENSOR_MS < 0 OR MODBUS_TRIES < 1 OR MODBUS_TIMEOUT_10MS < 1 OR NODE_DELAY_MS < 0 OR MUX_RESET_MS < 1000 OR MUX_PULSE_MS < 10 Then ConfigError = 3
+
+  If ConfigError = 0 OR ConfigError = 4 Then
+    Delay(0,MUX_RESET_MS,mSec)
+    PortSet(MuxRES,1)
+    Delay(0,MUX_PULSE_MS,mSec)
+    For ch = 1 To NUM_CHANNELS
+      CurrentChannel = ch
+      CurrentSensor = 0
+      ' Always clock: disabled/invalid channel 3 must not renumber channel 4.
+      PortSet(MuxCLK,1)
+      Delay(0,MUX_PULSE_MS,mSec)
+      PortSet(MuxCLK,0)
+      Delay(0,MUX_PULSE_MS,mSec)
+
+      If ChannelConfigError(ch) = 0 AND SweepSensorCount(ch) > 0 Then
+        WarmupDelay_ms = BOOT_BASE_MS + BOOT_PER_SENSOR_MS * SweepSensorCount(ch)
+        Delay(0,WarmupDelay_ms,mSec)
+        SerialFlush(ModbusPort)
+        For i = 1 To SweepSensorCount(ch)
+          CurrentSensor = i
+          ' One coherent payload, like the OTS Python logger. FC3; physical
+          ' 256..279; Campbell Start = physical + 1. Option 3 = uint16 Longs.
+          ' Reset the result counter before each call; discard failed buffers.
+          OTS_ResultCode(ch,i) = 0
+          ModbusClient(OTS_ResultCode(ch,i),ModbusPort,BaudRate,i,3,RawRegisters(),257,24,MODBUS_TRIES,MODBUS_TIMEOUT_10MS,3)
+          If OTS_ResultCode(ch,i) = 0 Then Call DecodeOTSResponse
+          Delay(0,NODE_DELAY_MS,mSec)
+        Next i
+      EndIf
+    Next ch
+  EndIf
+
+  PortSet(MuxRES,0)
+  PortSet(MuxCLK,0)
+  CurrentChannel = 0
+  CurrentSensor = 0
+  SweepDuration_s = Timer(1,Sec,1)
+  If SweepDuration_s >= MEAS_INTERVAL_MIN * 60 Then SweepOverrun = 1
+EndSub
+
+BeginProg
+  PortSet(MuxRES,0)
+  PortSet(MuxCLK,0)
+  Call ConfigureChannels
+  ' Format 0 = 8N1; final argument 4 = transparent half-duplex RS-485.
+  SerialOpen(ModbusPort,BaudRate,0,0,256,4)
+  ' Startup fills Public values only; scheduled scans write OTS_Data.
+  Call ReadOspreyArrays
+  Scan(MEAS_INTERVAL_MIN,Min,0,0)
+    Call ReadOspreyArrays
+    CallTable(OTS_Data)
+  NextScan
+EndProg
+

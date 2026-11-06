@@ -1,0 +1,147 @@
+' -------------------------------------------------------------------------
+' CR350 Code for Osprey ASP Sensor Array (Hybrid ASCII & Modbus)
+' Native 3-Second Scan Edition 
+' -------------------------------------------------------------------------
+' WIRING GUIDE
+' RS485 A (Blue)   = Com2 RX
+' RS485 B (White)  = Com2 TX
+' 12V Power (Red)  = SW12_1
+' Ground (Black)   = G
+' -------------------------------------------------------------------------
+
+Const ModbusPort = Com2 
+
+' =========================================================================
+' USER CONFIGURATION
+' =========================================================================
+Const NUM_SENSORS = 9         ' Enter the number of sensors in your array
+
+Public ArrayName As String * 20
+
+' State & Timing Variables
+Public PTemp As Float
+Public batt_volt As Float
+Public i As Long              
+Public MBResult As Long   
+Public Init_Nodes As Boolean  
+Public DailyToggleDone As Boolean
+Public StringCmd As String * 50
+Public rTime(9) As Float      ' Array to hold Real Time Clock data
+
+' Modbus Data Variables (1D Arrays)
+Public Distance(NUM_SENSORS) As Float
+Public Pressure(NUM_SENSORS) As Float
+Public Voltage(NUM_SENSORS) As Float
+Public Temperature(NUM_SENSORS) As Float
+
+' Define the Data Table
+DataTable(OspreyData, True, 30000)
+  DataInterval(0, 0, Min, 10) 
+  
+  Sample(1, ArrayName, String)
+  Sample(NUM_SENSORS, Distance(), IEEE4)
+  Sample(NUM_SENSORS, Pressure(), IEEE4)
+  Sample(NUM_SENSORS, Voltage(), FP2)
+  Sample(NUM_SENSORS, Temperature(), FP2)
+EndTable
+
+' -------------------------------------------------------------------------
+' ASCII HIBERNATION SUPPRESSION SUBROUTINE
+' -------------------------------------------------------------------------
+Sub DisableHibernation
+  Dim WarmupDelay_mSec As Long
+  WarmupDelay_mSec = 3500 + (350 * NUM_SENSORS) 
+  Delay(0, WarmupDelay_mSec, mSec) 
+
+  For i = 1 To NUM_SENSORS
+    SerialFlush(ModbusPort)
+    StringCmd = "op asp " & i & " set_hibernate_on_tx 0" & CHR(10)
+    SerialOut(ModbusPort, StringCmd, "", 0, 100)
+    Delay(0, 200, mSec)
+  Next i
+EndSub
+
+' -------------------------------------------------------------------------
+' MAIN PROGRAM
+' -------------------------------------------------------------------------
+BeginProg
+  ' Set Initial Configuration
+  ArrayName = "ASP_Array_1" 
+  Init_Nodes = True 
+  DailyToggleDone = False
+  
+  SW12(SW12_1, 1)
+
+  ' Open port ONCE for the entire program run
+  SerialOpen(ModbusPort, 9600, 0, 0, 100, 4)
+
+  ' =======================================================================
+  ' NATIVE 3-SECOND SCAN
+  ' Guarantees a minimum of 3 seconds between loop starts
+  ' =======================================================================
+  Scan(3, Sec, 0, 0)
+    
+    ' Read logger health and internal clock
+    PanelTemp(PTemp, 60)
+    Battery(batt_volt)
+    RealTime(rTime)
+
+    ' ---------------------------------------------------------------------
+    ' 1. DAILY POWER TOGGLE & ASCII OVERRIDE (Midnight Check)
+    ' ---------------------------------------------------------------------
+    If ((rTime(4) = 0 AND rTime(5) = 0) AND (DailyToggleDone = False)) OR Init_Nodes Then
+      
+      ' Toggle power off for 5 seconds to clear nodes
+      SW12(SW12_1, 0)
+      Delay(0, 5, Sec)
+      SW12(SW12_1, 1)
+      
+      ' -- PORT RESET FOR ASCII --
+      SerialClose(ModbusPort)
+      Delay(0, 100, mSec)
+      SerialOpen(ModbusPort, 9600, 0, 0, 100, 4)
+      
+      Call DisableHibernation
+      
+      ' Flush the buffer to clear out ASCII noise before returning to Modbus
+      SerialFlush(ModbusPort)
+      ' --------------------------
+      
+      Init_Nodes = False 
+      DailyToggleDone = True ' Prevent multiple toggles during the midnight minute
+    EndIf
+
+    ' Reset the daily toggle flag once it is no longer 00:00 (Midnight)
+    If rTime(4) <> 0 OR rTime(5) <> 0 Then
+      DailyToggleDone = False
+    EndIf
+
+    ' Ensure power stays on during standard polling
+    SW12(SW12_1, 1)
+
+    ' ---------------------------------------------------------------------
+    ' 2. MODBUS POLLING LOOP
+    ' ---------------------------------------------------------------------
+    For i = 1 To NUM_SENSORS 
+      Distance(i) = NAN
+      Pressure(i) = NAN
+      Voltage(i) = NAN
+      Temperature(i) = NAN
+      
+      ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Distance(i), 257, 1, 1, 300, 2)
+      Delay(0, 40, mSec)
+      
+      ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Pressure(i), 255, 1, 1, 300, 2)
+      Delay(0, 40, mSec)
+      
+      ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Voltage(i), 259, 1, 1, 200, 2)
+      Delay(0, 40, mSec)
+      
+      ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Temperature(i), 261, 1, 1, 200, 2)
+      Delay(0, 120, mSec)
+    Next i
+    
+    CallTable(OspreyData)
+    
+  NextScan
+EndProg

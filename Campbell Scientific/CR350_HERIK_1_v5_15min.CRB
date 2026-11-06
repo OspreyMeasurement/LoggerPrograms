@@ -1,0 +1,160 @@
+' -------------------------------------------------------------------------
+' CR350 Reference Code for Osprey ASP Sensor Array
+' Multiplexer: AM16/32 (4x16 Mode) - Multi-Channel Support
+' -------------------------------------------------------------------------
+
+' Define Logger Terminals
+Const MuxRES = C1       
+Const MuxCLK = C2       
+Const ModbusPort = Com2 ' Matches the physical COM2 Rx/Tx terminals
+
+' =========================================================================
+' USER CONFIGURATION
+' =========================================================================
+' 1. Define Multiplexer Channels (Max 16 in 4x16 mode)
+Const NUM_CHANNELS = 5
+
+' 2. Define the max number of sensors on ANY single channel
+' (Required to allocate logger memory. Set high enough for your largest array)
+Const MAX_SENSORS = 11
+
+' Configuration arrays (Editable live via LoggerNet/PC400)
+Public SensorCount(NUM_CHANNELS) As Long
+Public ArrayName(NUM_CHANNELS) As String * 20
+
+' Declare State Variables
+Public PTemp As Float
+Public batt_volt As Float
+Public ch As Long        ' Mux Channel Index
+Public i As Long         ' Sensor Index
+Public MBResult As Long   
+
+' Modbus Data Variables (2D Arrays: Channel, Sensor Index)
+Public Distance(NUM_CHANNELS, MAX_SENSORS) As Float
+Public Voltage(NUM_CHANNELS, MAX_SENSORS) As Float
+Public Temperature(NUM_CHANNELS, MAX_SENSORS) As Float
+
+' Define the Data Table
+DataTable(OspreyData, True, -1)
+  DataInterval(0, 15, Min, 10)
+  
+  ' Sample the names for reference
+  Sample(NUM_CHANNELS, ArrayName(), String)
+  
+  ' Flattened 2D Arrays (Stores all channels & all max possible sensors)
+  Sample(NUM_CHANNELS * MAX_SENSORS, Distance(), IEEE4)
+  Sample(NUM_CHANNELS * MAX_SENSORS, Voltage(), FP2)
+  Sample(NUM_CHANNELS * MAX_SENSORS, Temperature(), FP2)
+
+EndTable
+
+' -------------------------------------------------------------------------
+' MEASUREMENT SUBROUTINE
+' -------------------------------------------------------------------------
+Sub ReadOspreyArray
+  Dim WarmupDelay_mSec As Long
+  
+  ' Reset ALL possible array elements to NAN to prevent stale data
+  Dim r As Long, c As Long
+  For r = 1 To NUM_CHANNELS
+    For c = 1 To MAX_SENSORS
+      Distance(r, c) = NAN
+      Voltage(r, c) = NAN
+      Temperature(r, c) = NAN
+    Next c
+  Next r
+
+  
+  ' 1. MULTIPLEXER CONTROL & POWER UP
+  PortSet(MuxRES, 1) 
+  Delay(0, 10, mSec)
+  
+  ' Loop through each defined multiplexer channel
+  For ch = 1 To NUM_CHANNELS 
+    
+    ' Clock the multiplexer to advance to the next channel
+    PortSet(MuxCLK, 1) 
+    Delay(0, 10, mSec)
+    PortSet(MuxCLK, 0) 
+    
+    ' Only execute if sensors are configured for this specific channel
+    If SensorCount(ch) > 0 Then
+      
+      ' 2. SENSOR WARM-UP DELAY (Calculated dynamically per channel)
+      WarmupDelay_mSec = 3500 + (450 * SensorCount(ch)) 
+      Delay(0, WarmupDelay_mSec, mSec) 
+
+      ' 3. MODBUS POLLING LOOP (Closest to Farthest)
+      For i = 1 To SensorCount(ch)
+                
+        ' Using Logical addresses (Physical + 1)
+        ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Voltage(ch, i), 259, 1, 1, 500, 2)
+        Delay(0, 100, mSec)
+
+        ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Distance(ch, i), 257, 1, 1, 500, 2)
+        Delay(0, 100, mSec)
+      
+        ModbusMaster(MBResult, ModbusPort, 9600, i, 3, Temperature(ch, i), 261, 1, 1, 500, 2)
+        Delay(0, 100, mSec)
+       
+        ' 4. NODE TRANSITION DELAY
+        Delay(0, 500, mSec)
+      Next i
+      
+    EndIf
+  Next ch
+  
+  ' 5. SHUTDOWN ARRAY & POWER CYCLE
+  PortSet(MuxRES, 0) 
+EndSub
+
+' -------------------------------------------------------------------------
+' MAIN PROGRAM
+' -------------------------------------------------------------------------
+BeginProg
+  ' Open COM port for Modbus
+  SerialOpen(ModbusPort, 9600, 0, 0, 100, 4)
+
+  ' =======================================================================
+  ' INITIALIZE CHANNEL CONFIGURATIONS
+  ' Define your array names and sensor counts here.
+  ' Note: Unused channels can be set to 0. 
+  ' =======================================================================
+  ArrayName(1) = "L5_1"
+  SensorCount(1) = 11
+
+  ArrayName(2) = "L5_2"
+  SensorCount(2) = 11
+
+  ArrayName(3) = "L6"
+  SensorCount(3) = 9
+
+  ArrayName(4) = "L7_1"
+  SensorCount(4) = 8 
+
+  ArrayName(5) = "L7_2"
+  SensorCount(5) = 8 
+  
+
+  ' =======================================================================
+  ' RUN ON STARTUP / POWER CYCLE
+  ' =======================================================================
+  ' Populates the Public variables immediately on boot for live monitoring
+  Call ReadOspreyArray
+
+  ' =======================================================================
+  ' RUN ON SCHEDULED INTERVAL
+  ' =======================================================================
+  Scan(15, Min, 0, 0)
+    ' Read internal logger health
+    PanelTemp(PTemp, 60)
+    Battery(batt_volt)
+
+    ' Call the measurement sequence
+    Call ReadOspreyArray
+    
+    ' Save the data to memory
+    CallTable(OspreyData)
+  NextScan
+EndProg
+
